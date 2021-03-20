@@ -8,7 +8,8 @@ import { DbService } from './db.service';
   styleUrls: ['./app.component.scss']
 })
 export class AppComponent implements OnInit {
-  heros$ = new BehaviorSubject<any[]>([])
+
+  heros$?: BehaviorSubject<any[]>
 
   constructor(
     private db: DbService
@@ -21,6 +22,14 @@ export class AppComponent implements OnInit {
 
   async add() {
     await this.db.add()
+  }
+
+  async remove(id: string) {
+    await this.db.remove(id)
+  }
+
+  async forceReplication() {
+    await this.db.forceReplication()
   }
 
 }

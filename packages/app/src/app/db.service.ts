@@ -1,16 +1,12 @@
 import { Injectable } from '@angular/core';
+import * as cuid from 'cuid';
 import * as faker from 'faker';
-import {
-  addRxPlugin,
-  createRxDatabase
-} from 'rxdb/plugins/core';
+import { addRxPlugin, createRxDatabase } from 'rxdb/plugins/core';
 // TODO import these only in non-production build
 import { RxDBDevModePlugin } from 'rxdb/plugins/dev-mode';
+import { RxDBMigrationPlugin } from 'rxdb/plugins/migration';
 import { RxDBQueryBuilderPlugin } from 'rxdb/plugins/query-builder';
-import {
-  pullQueryBuilderFromRxSchema,
-  pushQueryBuilderFromRxSchema, RxDBReplicationGraphQLPlugin
-} from 'rxdb/plugins/replication-graphql';
+import { pullQueryBuilderFromRxSchema, pushQueryBuilderFromRxSchema, RxDBReplicationGraphQLPlugin } from 'rxdb/plugins/replication-graphql';
 import { RxDBUpdatePlugin } from 'rxdb/plugins/update';
 import { RxDBValidatePlugin } from 'rxdb/plugins/validate';
 import { BehaviorSubject } from 'rxjs';
@@ -27,17 +23,18 @@ addRxPlugin(RxDBValidatePlugin);
 addRxPlugin(RxDBUpdatePlugin);
 
 addRxPlugin(RxDBQueryBuilderPlugin);
+addRxPlugin(RxDBMigrationPlugin);
+
 
 const GRAPHQL_PORT = 10102;
 const GRAPHQL_PATH = '/graphql';
 const GRAPHQL_SUBSCRIPTION_PORT = 10103;
 const GRAPHQL_SUBSCRIPTION_PATH = '/subscriptions';
 
-console.log('hostname: ' + window.location.hostname);
 const syncURL = 'http://' + window.location.hostname + ':' + GRAPHQL_PORT + GRAPHQL_PATH;
 
-const heroSchema = {
-  version: 0,
+const schema = {
+  version: 2,
   type: 'object',
   properties: {
     id: {
@@ -50,37 +47,41 @@ const heroSchema = {
     color: {
       type: 'string'
     },
+    createdAt: {
+      type: ["number", "null"],
+    },
     updatedAt: {
       type: 'number'
     }
   },
-  indexes: ['name', 'color', 'updatedAt'],
-  required: ['color']
+  indexes: ['name', 'updatedAt'],
+  required: ['name']
 };
 
-const batchSize = 5;
+const batchSize = 50;
 
 const hero = {
-  schema: heroSchema,
+  schema: schema,
   feedKeys: [
     'id',
     'updatedAt'
   ],
   deletedFlag: 'deleted',
-  subscriptionParams: {
-    token: 'String!'
-  }
+  // subscriptionParams: {
+  //   token: 'String!'
+  // }
+}
+const migrationStrategies = {
+  // 1 means, this transforms data from version 0 to version 1
+  1: (oldDoc: any) => {
+    oldDoc.createdAt = new Date().getTime(); // string to unix
+    return oldDoc;
+  },
+  2: (oldDoc: any) => oldDoc,
 }
 
-const pullQueryBuilder = pullQueryBuilderFromRxSchema(
-  'hero',
-  hero,
-  batchSize
-);
-const pushQueryBuilder = pushQueryBuilderFromRxSchema(
-  'hero',
-  hero
-);
+const pullQueryBuilder = pullQueryBuilderFromRxSchema('hero', hero, batchSize);
+const pushQueryBuilder = pushQueryBuilderFromRxSchema('hero', hero);
 
 @Injectable({
   providedIn: 'root'
@@ -90,6 +91,7 @@ export class DbService {
   heros$ = new BehaviorSubject<any[]>([])
   name = "testdb"
   collections: any;
+  replicationState: any;
 
   async setup() {
     console.log('Create database..');
@@ -100,13 +102,15 @@ export class DbService {
 
     console.log('Create collection..');
     this.collections = await db.addCollections({
-      hero: { schema: heroSchema }
+      hero: {
+        schema,
+        migrationStrategies
+      }
     });
-
 
     // set up replication
     console.log('Start replication..');
-    const replicationState = this.collections['hero'].syncGraphQL({
+    this.replicationState = this.collections['hero'].syncGraphQL({
       url: syncURL,
       headers: {
         /* optional, set an auth header */
@@ -130,7 +134,7 @@ export class DbService {
     });
     // show replication-errors in logs
     console.log('Subscribe to errors..');
-    replicationState.error$.subscribe((err: any) => {
+    this.replicationState.error$.subscribe((err: any) => {
       console.error('replication error:');
       console.dir(err);
     });
@@ -175,11 +179,9 @@ export class DbService {
       }
     );
     ret.subscribe({
-      next: async (data) => {
-        console.log('subscription emitted => trigger run()');
-        console.dir(data);
-        await replicationState.run();
-        console.log('run() done');
+      next: async (resp: any) => {
+        console.log('subscription emitted => changedHero', resp.data.changedHero.id);
+        await this.replicationState.run();
       },
       error(error) {
         console.log('run() got error:');
@@ -196,56 +198,45 @@ export class DbService {
      * server.
      */
     console.log('Await initial replication..');
-    await replicationState.awaitInitialReplication();
+    await this.replicationState.awaitInitialReplication();
 
     // subscribe to heroes list and render the list on change
     console.log('Subscribe to query..');
     this.heros$ = this.collections['hero'].find().sort({
       name: 'asc'
     }).$
+  }
 
-    // set up click handlers
-    // window.deleteHero = async (id) => {
-    //   console.log('delete doc ' + id);
-    //   const doc = await collection.findOne(id).exec();
-    //   if (doc) {
-    //     console.log('got doc, remove it');
-    //     try {
-    //       await doc.remove();
-    //     } catch (err) {
-    //       console.error('could not remove doc');
-    //       console.dir(err);
-    //     }
-    //   }
-    // };
-    // insertButton.onclick = async function () {
-    //   const name = document.querySelector('input[name="name"]').value;
-    //   const color = document.querySelector('input[name="color"]').value;
-    //   const obj = {
-    //     id: name,
-    //     name: name,
-    //     color: color
-    //   };
-    //   console.log('inserting hero:');
-    //   console.dir(obj);
-
-    //   await collection.insert(obj);
-    //   document.querySelector('input[name="name"]').value = '';
-    //   document.querySelector('input[name="color"]').value = '';
-    // };
+  async forceReplication() {
+    await this.replicationState.run();
   }
 
   async add() {
     const name = faker.name.findName()
     const color = faker.commerce.color();
     const obj = {
-      id: name,
+      id: cuid(),
       name: name,
-      color: color
+      color: color,
+      createdAt: Date.now()
     };
     console.log('inserting hero:');
     console.dir(obj);
 
     await this.collections['hero'].insert(obj);
   };
+
+  async remove(id: string) {
+    console.log('delete doc ' + id);
+    const doc = await this.collections['hero'].findOne(id).exec();
+    if (doc) {
+      console.log('got doc, remove it');
+      try {
+        await doc.remove();
+      } catch (err) {
+        console.error('could not remove doc');
+        console.dir(err);
+      }
+    }
+  }
 }
