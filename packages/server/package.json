@@ -1,5 +1,5 @@
 {
-  "name": "server",
+  "name": "@qroups/server",
   "version": "1.0.0",
   "description": "",
   "main": "src/main.js",
@@ -11,6 +11,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@qroups/commons": "1.0.0",
     "apollo-server-express": "2.21.2",
     "concurrently": "6.0.0",
     "cors": "2.8.5",

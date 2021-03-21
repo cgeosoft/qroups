@@ -1,0 +1,10 @@
+{
+  "name": "@qroups/commons",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "files": [
+    "models/"
+  ],
+  "dependencies": {}
+}

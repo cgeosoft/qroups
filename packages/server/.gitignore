@@ -4,3 +4,7 @@ ipfs/
 orbitdb/
 
 .env
+
+data/*
+
+!.gitkeep
